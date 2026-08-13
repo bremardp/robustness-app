@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TradeStation Robustness Analyzer</title>
+<script src="/static/chart.umd.min.js"></script>
+<style>
+  :root { --green:#16a34a; --red:#dc2626; --amber:#d97706; --bg:#0f172a; --card:#1e293b; --line:#334155; --text:#e2e8f0; --muted:#94a3b8; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:18px 28px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:18px; margin:0; }
+  header .tag { font-size:12px; color:var(--muted); }
+  main { max-width:1100px; margin:0 auto; padding:24px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:20px; }
+  .card h2 { margin:0 0 14px; font-size:15px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  input[type=file] { width:100%; padding:10px; background:#0b1220; border:1px dashed var(--line); border-radius:8px; color:var(--text); }
+  input[type=number], select { width:100%; padding:8px; background:#0b1220; border:1px solid var(--line); border-radius:8px; color:var(--text); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+  button { margin-top:16px; width:100%; padding:12px; background:#2563eb; border:0; border-radius:8px; color:#fff; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:wait; }
+  .badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:700; text-transform:uppercase; }
+  .badge.pass{background:#052e16;color:#4ade80;border:1px solid #166534;}
+  .badge.warn{background:#431407;color:#fbbf24;border:1px solid #92400e;}
+  .badge.fail{background:#450a0a;color:#f87171;border:1px solid #7f1d1d;}
+  .score-ring { display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
+  .score-num { font-size:44px; font-weight:800; }
+  .verdict { font-size:16px; }
+  .metrics { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:10px; }
+  .metric { background:#0b1220; border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .metric .k { font-size:11px; color:var(--muted); }
+  .metric .v { font-size:16px; font-weight:700; margin-top:2px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-size:11px; text-transform:uppercase; }
+  .chart { position:relative; height:320px; }
+  .muted{color:var(--muted);}
+  #error { display:none; background:#450a0a; border:1px solid #7f1d1d; color:#f87171; padding:12px; border-radius:8px; margin-bottom:16px; }
+  #spinner { display:none; text-align:center; padding:24px; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>TradeStation Robustness Analyzer</h1>
+  <span class="tag">upload a Trades List CSV &rarr; get a robustness report</span>
+</header>
+<main>
+  <div id="error"></div>
+
+  <div class="card">
+    <h2>1 &middot; Upload TradeStation trades CSV</h2>
+    <label for="file">TradeStation Trades List / Performance export / TradeData.csv</label>
+    <input type="file" id="file" accept=".csv,.txt,.xlsx" />
+    <div class="grid">
+      <div>
+        <label for="n_sims">Simulations</label>
+        <input type="number" id="n_sims" value="2000" min="50" max="20000" step="100" />
+      </div>
+      <div>
+        <label for="seed">Random seed (optional)</label>
+        <input type="number" id="seed" placeholder="auto" />
+      </div>
+      <div>
+        <label for="starting_equity">Starting equity ($)</label>
+        <input type="number" id="starting_equity" value="100000" step="1000" />
+      </div>
+      <div>
+        <label for="ruin_point">Ruin floor ($, optional)</label>
+        <input type="number" id="ruin_point" placeholder="60% of equity" step="1000" />
+      </div>
+      <div>
+        <label for="skip_fraction">Trade skip %</label>
+        <input type="number" id="skip_fraction" value="10" min="1" max="50" />
+      </div>
+    </div>
+    <button id="run">Analyze robustness</button>
+  </div>
+
+  <div id="spinner">Running Monte Carlo simulations&hellip;</div>
+  <div id="results" style="display:none">
+
+    <div class="card">
+      <h2>Overall robustness</h2>
+      <div class="score-ring">
+        <div>
+          <div class="score-num" id="score"></div>
+          <div><span class="badge" id="verdict"></span></div>
+        </div>
+        <div id="score-message" class="muted" style="flex:1"></div>
+        <div id="score-meta" class="muted"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Summary metrics</h2>
+      <div class="metrics" id="metrics"></div>
+    </div>
+
+    <div class="card">
+      <h2>Equity curve &amp; Monte Carlo range</h2>
+      <div class="chart"><canvas id="eqChart"></canvas></div>
+    </div>
+
+    <div class="card">
+      <h2>Drawdown &amp; trade P/L distribution</h2>
+      <div class="grid" style="grid-template-columns:1fr 1fr">
+        <div class="chart"><canvas id="ddChart"></canvas></div>
+        <div class="chart"><canvas id="histChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Robustness tests</h2>
+      <table id="tests">
+        <thead><tr><th>Test</th><th>Status</th><th>Result</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let charts = {};
+
+function fmt(x, d=0) {
+  if (x === null || x === undefined) return '&ndash;';
+  if (x === Infinity) return '&infin;';
+  if (typeof x === 'string') return x;
+  return x.toLocaleString(undefined, {minimumFractionDigits:d, maximumFractionDigits:d});
+}
+function money(x) { return '$' + fmt(x); }
+function pct(x) { return fmt((x||0)*100, 1) + '%'; }
+function badge(s) { return '<span class="badge ' + s + '">' + s + '</span>'; }
+
+$('run').addEventListener('click', async () => {
+  const f = $('file').files[0];
+  if (!f) { showError('Choose a CSV file first.'); return; }
+  const fd = new FormData();
+  fd.append('file', f);
+  fd.append('n_sims', $('n_sims').value || 2000);
+  if ($('seed').value) fd.append('seed', $('seed').value);
+  fd.append('starting_equity', $('starting_equity').value || 100000);
+  if ($('ruin_point').value) fd.append('ruin_point', $('ruin_point').value);
+  fd.append('skip_fraction', ($('skip_fraction').value || 10) / 100);
+
+  hideError();
+  $('run').disabled = true;
+  $('spinner').style.display = 'block';
+  $('results').style.display = 'none';
+  try {
+    const resp = await fetch('/api/analyze', { method:'POST', body:fd });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'Request failed');
+    $('results').style.display = 'block';
+    render(data);
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    $('run').disabled = false;
+    $('spinner').style.display = 'none';
+  }
+});
+
+function showError(msg){ $('error').style.display='block'; $('error').textContent = msg; }
+function hideError(){ $('error').style.display='none'; }
+
+function render(d) {
+  const r = d.robustness;
+  $('score').textContent = (r.score*100).toFixed(0) + '/100';
+  const vb = $('verdict');
+  vb.className = 'badge ' + r.verdict;
+  vb.textContent = r.verdict;
+  $('score-message').textContent = r.message;
+  $('score-meta').innerHTML = 'File: <b>' + d.filename + '</b> &middot; ' + d.n_trades + ' trades &middot; ' +
+    d.parsed_as + ' &middot; seed ' + r.seed + ' &middot; ' + r.n_sims + ' sims';
+
+  const m = d.summary;
+  const pf = m.profit_factor_infinite ? '&infin;' : fmt(m.profit_factor,2);
+  const rf = m.recovery_factor_infinite ? '&infin;' : fmt(m.recovery_factor,2);
+  const metrics = [
+    ['Net profit', money(m.net_profit)], ['Gross profit', money(m.gross_profit)],
+    ['Gross loss', money(m.gross_loss)], ['Profit factor', pf],
+    ['Win rate', pct(m.win_rate)], ['Avg win', money(m.avg_win)],
+    ['Avg loss', money(m.avg_loss)], ['Payoff ratio', fmt(m.payoff_ratio,2)],
+    ['Expectancy / trade', money(m.expectancy)], ['Max drawdown', money(m.max_drawdown)],
+    ['Max DD %', pct(m.max_drawdown_pct)], ['Recovery factor', rf],
+    ['Longest win streak', m.longest_win_streak], ['Longest loss streak', m.longest_loss_streak],
+    ['Avg bars held (h)', fmt(m.avg_bars_held_hours,1)], ['Median trade', money(m.median_trade)],
+  ];
+  $('metrics').innerHTML = metrics.map(([k,v]) =>
+    '<div class="metric"><div class="k">'+k+'</div><div class="v">'+v+'</div></div>').join('');
+
+  // Tests table
+  const tbody = document.querySelector('#tests tbody');
+  tbody.innerHTML = r.tests.map(t => {
+    const kvs = Object.entries(t.metrics || {}).filter(([k]) =>
+      !k.includes('percentile_path')).slice(0, 6);
+    const detail = kvs.map(([k,v]) => '<span class="muted">'+k.replace(/_/g,' ')+' = ' +
+      (typeof v==='number' ? fmt(v,2) : v) + '</span>').join(' &middot; ');
+    return '<tr><td><b>'+t.name+'</b><div class="muted">'+t.description+'</div></td>' +
+      '<td>'+badge(t.status)+'</td><td>'+t.details+'<div class="muted" style="margin-top:4px">'+detail+'</div></td></tr>';
+  }).join('');
+
+  // Charts
+  drawCharts(d);
+}
+
+function drawCharts(d) {
+  const x = d.trades.map((_, i) => i + 1);
+  const eq = d.series.equity;
+  const mc = (d.robustness.tests.find(t => t.id === 'monte-carlo-reshuffle') || {}).metrics || {};
+
+  // Equity curve + MC band
+  const datasets = [{ label:'Actual equity', data:eq, borderColor:'#38bdf8', borderWidth:2, pointRadius:0, fill:false }];
+  if (mc.equity_percentile_path) {
+    datasets.push({ label:'MC p95', data:mc.equity_percentile_path.p95, borderColor:'#16a34a', borderWidth:1, borderDash:[3,3], pointRadius:0, fill:'+1', backgroundColor:'rgba(22,163,74,0.10)' });
+    datasets.push({ label:'MC median', data:mc.equity_percentile_path.p50, borderColor:'#4ade80', borderWidth:1, pointRadius:0, fill:false });
+    datasets.push({ label:'MC p5', data:mc.equity_percentile_path.p5, borderColor:'#dc2626', borderWidth:1, borderDash:[3,3], pointRadius:0, fill:false });
+  }
+  mkChart('eqChart', { labels:x, datasets }, { y:{ ticks:{ callback: v => '$' + (v/1000).toFixed(0)+'k' } } });
+
+  mkChart('ddChart', { labels:x, datasets:[{ label:'Drawdown ($)', data:d.series.drawdown, backgroundColor:'rgba(220,38,38,0.7)', borderColor:'#ef4444', pointRadius:0, fill:true }] }, {});
+
+  // Trade P/L histogram
+  const pnls = d.series.trade_pnl;
+  const lo = Math.min(...pnls), hi = Math.max(...pnls);
+  const bins = 30, width = (hi - lo) / bins || 1;
+  const counts = new Array(bins).fill(0);
+  pnls.forEach(p => { let b = Math.floor((p - lo) / width); b = Math.min(bins-1, Math.max(0, b)); counts[b]++; });
+  const labels = Array.from({length:bins}, (_, i) => lo + i*width);
+  mkChart('histChart', { labels: labels.map((v,i)=> '$'+(v+width/2).toFixed(0)), datasets:[{ label:'Trades', data:counts, backgroundColor:'#2563eb' }] }, {});
+
+  // P/L histogram - color bars by sign
+  const hc = charts['histChart'];
+  if (hc) hc.data.datasets[0].backgroundColor = labels.map(v => v+width/2 < 0 ? 'rgba(220,38,38,0.8)' : 'rgba(22,163,74,0.8)');
+  if (hc) hc.update();
+}
+
+function mkChart(id, data, opts) {
+  const canvas = document.getElementById(id);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart(ctx, {
+    type:'line',
+    data,
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ labels:{ color:'#94a3b8' } } },
+      scales:{ x:{ grid:{ color:'#1e293b' }, ticks:{ color:'#94a3b8' } }, y:{ grid:{ color:'#1e293b' }, ticks:{ color:'#94a3b8' }, ...(opts.y||{}) } } }
+  });
+}
+</script>
+</body>
+</html>

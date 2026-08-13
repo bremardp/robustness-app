@@ -1,0 +1,9 @@
+services:
+  robustness:
+    build: .
+    container_name: ts-robustness
+    ports:
+      - "8001:8000"
+    environment:
+      - MAX_UPLOAD_MB=50
+    restart: unless-stopped
