@@ -11,6 +11,7 @@ All tests operate on the closed-trade P/L list only (no OHLC data needed):
 6. drawdown-consistency      - is the realized max drawdown unusual vs random order
 7. bootstrap-mean-ci         - 95% CI on mean trade P/L (expectancy)
 8. risk-of-ruin              - probability equity falls below a floor (from bootstrap)
+9. r-squared-slope-equity    - how closely the equity curve follows a straight-line trend
 
 Every test returns a dict::
 
@@ -19,6 +20,7 @@ Every test returns a dict::
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -476,6 +478,119 @@ def risk_of_ruin_test(
 
 
 # ---------------------------------------------------------------------------
+# 9. R-Squared Slope Equity Curve
+# ---------------------------------------------------------------------------
+DEFAULT_MIN_R2 = 0.70
+_WARN_R2 = 0.60  # warn band: 0.60 <= R2 < 0.70
+
+
+def _js_round(x: float) -> float:
+    """Match JavaScript ``Math.round`` semantics (round half toward +inf)."""
+    f = math.floor(x)
+    return f + 1.0 if (x - f) >= 0.5 else f
+
+
+def _ols_fit(xs: List[float], ys: List[float]) -> Optional[Tuple[float, float]]:
+    """Ordinary least-squares linear fit -> (intercept, slope) or None."""
+    n = len(xs)
+    if n < 2 or len(ys) != n:
+        return None
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    num = 0.0
+    den = 0.0
+    for i in range(n):
+        dx = xs[i] - mean_x
+        num += dx * (ys[i] - mean_y)
+        den += dx * dx
+    if abs(den) <= 1e-12:
+        return None
+    slope = num / den
+    return mean_y - slope * mean_x, slope
+
+
+def _coefficient_of_determination(xs: List[float], ys: List[float]) -> Optional[float]:
+    """R-squared of ys vs the OLS line on x -> 1 - SSres / SStot (1.0 if SStot==0)."""
+    n = len(xs)
+    if n < 2 or len(ys) != n:
+        return None
+    fit = _ols_fit(xs, ys)
+    if fit is None:
+        return None
+    intercept, slope = fit
+    mean_y = sum(ys) / n
+    ss_tot = float(sum((y - mean_y) ** 2 for y in ys))
+    if ss_tot <= 1e-12:
+        return 1.0
+    ss_res = float(sum((ys[i] - (intercept + slope * xs[i])) ** 2 for i in range(n)))
+    return 1.0 - ss_res / ss_tot
+
+
+def r_squared_slope_equity_test(trades: List[Dict[str, Any]], min_r2: float = DEFAULT_MIN_R2) -> Dict[str, Any]:
+    """
+    How closely the equity curve follows a straight-line trend.
+
+    Equity = cumulative net P/L in chronological (exit-time) trade order, values
+    rounded like the reference tool's JavaScript ``Math.round``. An OLS line is
+    fit vs trade index 1..n and R-squared measures the fraction of equity
+    variance explained by that line. Pass: R2 > 0.70; warn: 0.60-0.70; else fail.
+    """
+    ordered = sorted(trades, key=lambda t: (t.get("exit"), t.get("entry")))
+    equity: List[float] = []
+    running = 0.0
+    for t in ordered:
+        running += float(t["pnl"])
+        equity.append(_js_round(running))
+
+    n = len(equity)
+    r2: Optional[float] = None
+    slope: Optional[float] = None
+    if n >= 2:
+        xs = [float(i) for i in range(1, n + 1)]
+        r2 = _coefficient_of_determination(xs, equity)
+        fit = _ols_fit(xs, equity)
+        if fit is not None:
+            slope = fit[1]
+
+    if r2 is None:
+        status, score = "fail", 0.0
+        detail = (
+            f"R-squared = n/a. At least 2 trades are required to fit a regression line "
+            f"(had {n})."
+        )
+    elif r2 > min_r2:
+        status, score = "pass", 1.0
+    elif r2 >= _WARN_R2:
+        status, score = "warn", 0.5
+    else:
+        status, score = "fail", 0.0
+
+    if r2 is not None and slope is not None:
+        verdict = (
+            "the equity curve tracks a straight-line trend well." if status == "pass"
+            else "the equity curve only loosely follows a straight line - growth is uneven."
+        )
+        detail = (
+            f"Equity-curve R-squared is {r2:.4f} (pass requires > {min_r2:.2f}); "
+            f"the line rises ${slope:,.2f} per trade on average, so {verdict}"
+        )
+    return _result(
+        "r-squared-slope-equity",
+        "R-Squared Slope Equity Curve",
+        "R-squared of the equity curve vs trade index - how closely growth follows a straight line.",
+        status,
+        score,
+        detail,
+        {
+            "r_squared": r2 if r2 is not None else None,
+            "min_r2_to_pass": min_r2,
+            "slope_per_trade": slope if slope is not None else None,
+            "equity_points": n,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 _TEST_WEIGHTS = {
@@ -487,6 +602,7 @@ _TEST_WEIGHTS = {
     "drawdown-consistency": 0.10,
     "bootstrap-mean-ci": 0.10,
     "risk-of-ruin": 0.10,
+    "r-squared-slope-equity": 0.10,
 }
 
 
@@ -514,6 +630,7 @@ def run_robustness_suite(
         drawdown_consistency_test(pnls, n_sims, rng_seed + 5),
         bootstrap_mean_ci_test(pnls, n_sims, rng_seed + 6),
         risk_of_ruin_test(pnls, n_sims, rng_seed + 7, starting_equity, ruin_point),
+        r_squared_slope_equity_test(trades),
     ]
 
     weight_sum = 0.0

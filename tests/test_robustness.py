@@ -9,6 +9,7 @@ from app.main import app
 from app.metrics import compute_metrics, equity_curve, max_drawdown, pnl_array
 from app.parser import parse_tradestation_trade_export
 from app.robustness import run_robustness_suite
+from app.robustness import r_squared_slope_equity_test
 from app.report import build_report
 
 DATA = Path(__file__).resolve().parent.parent / "sample_data"
@@ -29,7 +30,7 @@ def test_parse_all_three_layouts_match():
     _, p2 = _pnls("sample_tradedata.csv")
     _, p3 = _pnls("sample_flat_trades.csv")
     assert len(p1) == 260
-    # trades-list and TradeData CSVs store P/L rounded to cents; flat keeps full precision
+    # all three layouts store net P/L (after costs); trades-list and TradeData round to cents
     assert np.allclose(np.sort(p1), np.sort(p3), atol=1.5)
     assert np.allclose(np.sort(p2), np.sort(p3), atol=1.5)
 
@@ -60,6 +61,38 @@ def test_parse_open_profit_layout_fallback():
     assert len(trades) == 2
     assert trades[0]["pnl"] == pytest.approx(-0.32)
     assert trades[1]["pnl"] == pytest.approx(-0.35)
+
+
+def test_r2_test_on_sample():
+    trades, _ = _pnls("sample_flat_trades.csv")
+    r = r_squared_slope_equity_test(trades)
+    assert r["id"] == "r-squared-slope-equity"
+    assert r["name"] == "R-Squared Slope Equity Curve"
+    assert r["status"] in ("pass", "warn", "fail")
+    assert 0.0 <= r["score"] <= 1.0
+    assert 0.0 <= r["metrics"]["r_squared"] <= 1.0
+    assert r["metrics"]["equity_points"] == len(trades)
+    assert r["metrics"]["slope_per_trade"] is not None
+    assert "R-squared" in r["details"]
+
+
+def test_r2_pass_fail_behavior():
+    # Monotonic increasing trades -> equity is a straight line -> R2 == 1.0
+    trades = [{"entry": i, "exit": i, "pnl": 100.0} for i in range(10)]
+    r = r_squared_slope_equity_test(trades, min_r2=0.99)
+    assert r["metrics"]["r_squared"] == 1.0
+    assert r["status"] == "pass"
+
+    # Oscillating trades -> low R2 -> fails the 0.70 threshold
+    trades_osc = [{"entry": i, "exit": i, "pnl": 100.0 if i % 2 == 0 else -100.0} for i in range(10)]
+    r = r_squared_slope_equity_test(trades_osc, min_r2=0.70)
+    assert r["metrics"]["r_squared"] < 0.70
+    assert r["status"] == "fail"
+
+    # Fewer than 2 trades -> R2 undefined -> fail
+    r = r_squared_slope_equity_test([{"entry": 0, "exit": 0, "pnl": 5.0}])
+    assert r["metrics"]["r_squared"] is None
+    assert r["status"] == "fail"
 
 
 def test_metrics_values():
@@ -97,6 +130,8 @@ def test_robustness_suite_deterministic_and_keys():
     assert "bootstrap-mean-ci" in ids
     assert "risk-of-ruin" in ids
     assert "min-trades" in ids
+    assert "r-squared-slope-equity" in ids
+    assert ids[-1] == "r-squared-slope-equity"
     for t in r1["tests"]:
         assert t["status"] in ("pass", "warn", "fail")
         assert 0.0 <= t["score"] <= 1.0

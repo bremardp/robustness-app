@@ -39,7 +39,7 @@ access or CDN is required.
 1. **Parses** the CSV (auto-detects the layout, see below) into a uniform trade list.
 2. **Summarizes** the strategy: net/gross P/L, profit factor, win rate, avg win/loss,
    expectancy, max drawdown, recovery factor, streaks.
-3. **Runs 8 robustness tests** on the trade list and grades each one (pass / warn / fail):
+3. **Runs 9 robustness tests** on the trade list and grades each one (pass / warn / fail):
 
 | Test | Question it answers |
 |---|---|
@@ -51,6 +51,7 @@ access or CDN is required.
 | Drawdown consistency | Is the realized drawdown unusual vs random trade order? |
 | Bootstrap mean CI | Is the average trade reliably positive (95% CI)? |
 | Risk of ruin | Probability of touching the ruin floor over a trade run |
+| R-Squared slope equity curve | Does equity grow along a straight-line trend (R² of OLS fit vs trade index)? |
 
 4. Produces an **overall robustness score (0–100)** and verdict, with equity curve,
    Monte Carlo percentile band, drawdown, and trade P/L histogram charts.

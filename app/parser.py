@@ -245,15 +245,13 @@ def _parse_ts_performance_trades_list_csv(content: bytes) -> Tuple[bool, List[Di
             continue
 
         pnl_net = _parse_currency_us(row[pnl_col])
-        pnl = float(pnl_net)
         gross_pnl: Optional[float] = None
         if pl_col is not None and _looks_like_ts_trade_profit_cell(row2.get(pl_col)):
             gross_pnl = float(_parse_currency_us(row2.get(pl_col)))
-            pnl = gross_pnl
         trade: Dict[str, Any] = {
             "entry": entry_dt,
             "exit": exit_dt,
-            "pnl": float(pnl),
+            "pnl": float(pnl_net),
         }
         if gross_pnl is not None and abs(gross_pnl - pnl_net) > 1e-6:
             trade["pnl_gross"] = float(gross_pnl)
